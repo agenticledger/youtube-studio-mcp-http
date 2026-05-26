@@ -96,13 +96,13 @@ export const tools: ToolDef[] = [
 
   {
     name: 'youtube_studio_set_thumbnail',
-    description: 'Set a custom thumbnail for a video from a local file path',
+    description: 'Set a custom thumbnail for a video from a URL',
     inputSchema: z.object({
       videoId: z.string().describe('YouTube video ID'),
-      filePath: z.string().describe('Local file path to the thumbnail image (JPEG, PNG, GIF, BMP)'),
+      url: z.string().describe('Public URL to the thumbnail image (JPEG, PNG, GIF, BMP). Upload to Google Drive first and use the download URL.'),
     }),
     handler: async (client, args) =>
-      client.setThumbnail(args.videoId, args.filePath),
+      client.setThumbnail(args.videoId, args.url),
   },
 
   // ─── Playlist Management ──────────────────────────────────────────────

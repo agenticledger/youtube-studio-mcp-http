@@ -173,10 +173,13 @@ export class YouTubeStudioClient {
     return { deleted: true, videoId };
   }
 
-  async setThumbnail(videoId: string, filePath: string) {
+  async setThumbnail(videoId: string, url: string) {
     const yt = await this.getYouTube();
-    const fs = await import('fs');
-    const stream = fs.createReadStream(filePath);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to fetch thumbnail from URL: ${response.status} ${response.statusText}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const { Readable } = await import('stream');
+    const stream = Readable.from(buffer);
 
     const res = await yt.thumbnails.set({
       videoId,
