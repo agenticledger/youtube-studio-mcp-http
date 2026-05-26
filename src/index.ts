@@ -5,8 +5,8 @@
  * Auth model: Dual-mode — supports both direct Bearer passthrough
  * and OAuth 2.0 Client Credentials grant.
  *
- * The Bearer token IS the user's Google OAuth access token (or refresh token).
- * Each tool call injects the stored token as `accessToken` into tool args.
+ * The Bearer token IS the user's Google OAuth refresh token.
+ * The client auto-exchanges it for access tokens with caching (Gmail MCP pattern).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -231,7 +231,7 @@ app.get('/', (req, res) => {
 });
 
 // --- Auth resolver ---
-function resolveApiKey(req: express.Request): string | null {
+function resolveRefreshToken(req: express.Request): string | null {
   const auth = req.headers.authorization;
   if (!auth) return null;
 
@@ -249,7 +249,7 @@ function resolveApiKey(req: express.Request): string | null {
     return entry.accessKey;
   }
 
-  // Mode 2: Raw Bearer token — IS the Google OAuth access token
+  // Mode 2: Raw Bearer token — IS the Google OAuth refresh token
   return token;
 }
 
@@ -257,13 +257,11 @@ function resolveApiKey(req: express.Request): string | null {
 interface SessionState {
   server: Server;
   transport: StreamableHTTPServerTransport;
-  accessToken: string;
 }
 
 const sessions = new Map<string, SessionState>();
 
-function createMCPServer(accessToken: string): Server {
-  const client = new YouTubeStudioClient();
+function createMCPServer(client: YouTubeStudioClient): Server {
   const server = new Server(
     { name: 'youtube-studio-mcp-server', version: '1.0.0' },
     { capabilities: { tools: {} } }
@@ -286,9 +284,7 @@ function createMCPServer(accessToken: string): Server {
     }
 
     try {
-      // Inject the session's accessToken into tool args
-      const enrichedArgs = { ...args, accessToken };
-      const result = await tool.handler(client, enrichedArgs);
+      const result = await tool.handler(client, args as any);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -315,26 +311,28 @@ app.post('/mcp', async (req, res) => {
     return;
   }
 
-  // New session — requires Bearer token (Google OAuth access token)
-  const apiKey = resolveApiKey(req);
-  if (!apiKey) {
+  // New session — requires Bearer token (Google OAuth refresh token)
+  const refreshToken = resolveRefreshToken(req);
+  if (!refreshToken) {
     res.status(401).json({
       error: 'Missing or invalid Authorization header.',
-      note: 'Pass your Google OAuth access token as the Bearer token. Visit /authorize to get one.',
+      note: 'Pass your Google OAuth refresh token as the Bearer token. Visit /authorize to get one.',
       modes: {
-        bearer: 'Authorization: Bearer <google-oauth-access-token>',
-        oauth: `POST ${SERVER_BASE_URL}/oauth/token with client_id=${SLUG}&client_secret=<google-token>&grant_type=client_credentials`,
+        bearer: 'Authorization: Bearer <google-oauth-refresh-token>',
+        oauth: `POST ${SERVER_BASE_URL}/oauth/token with client_id=${SLUG}&client_secret=<google-refresh-token>&grant_type=client_credentials`,
         authorize: `${SERVER_BASE_URL}/authorize`,
       },
     });
     return;
   }
 
+  const client = new YouTubeStudioClient(refreshToken, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
+
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
   });
 
-  const server = createMCPServer(apiKey);
+  const server = createMCPServer(client);
 
   transport.onclose = () => {
     const sid = transport.sessionId;
@@ -349,7 +347,7 @@ app.post('/mcp', async (req, res) => {
 
   const newSessionId = transport.sessionId;
   if (newSessionId) {
-    sessions.set(newSessionId, { server, transport, accessToken: apiKey });
+    sessions.set(newSessionId, { server, transport });
     console.log(`[mcp] New session: ${newSessionId}`);
   }
 });

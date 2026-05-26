@@ -1,15 +1,53 @@
 /**
  * YouTube Studio API Client
  *
- * Stateless client using googleapis + OAuth2Client.
- * Every method accepts an accessToken as the first param (per-call auth).
+ * Refresh-token-based auth (matches Gmail MCP pattern).
+ * Constructor takes (refreshToken, clientId, clientSecret).
+ * Auto-exchanges for access tokens with caching.
  */
 
 import { google, youtube_v3 } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 
 export class YouTubeStudioClient {
-  private getYouTube(accessToken: string): youtube_v3.Youtube {
+  private refreshToken: string;
+  private clientId: string;
+  private clientSecret: string;
+  private cachedAccessToken: string | null = null;
+  private tokenExpiresAt: number = 0;
+
+  constructor(refreshToken: string, clientId: string, clientSecret: string) {
+    this.refreshToken = refreshToken;
+    this.clientId = clientId;
+    this.clientSecret = clientSecret;
+  }
+
+  private async getAccessToken(): Promise<string> {
+    if (this.cachedAccessToken && Date.now() < this.tokenExpiresAt - 60_000) {
+      return this.cachedAccessToken;
+    }
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: this.refreshToken,
+        client_id: this.clientId,
+        client_secret: this.clientSecret,
+      }),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Token refresh failed (${response.status}): ${text}`);
+    }
+    const data = await response.json() as any;
+    this.cachedAccessToken = data.access_token;
+    this.tokenExpiresAt = Date.now() + (data.expires_in * 1000);
+    return this.cachedAccessToken!;
+  }
+
+  private async getYouTube(): Promise<youtube_v3.Youtube> {
+    const accessToken = await this.getAccessToken();
     const auth = new OAuth2Client();
     auth.setCredentials({ access_token: accessToken });
     return google.youtube({ version: 'v3', auth });
@@ -17,8 +55,8 @@ export class YouTubeStudioClient {
 
   // ─── Video Management ───────────────────────────────────────────────
 
-  async listVideos(accessToken: string, maxResults = 25, pageToken?: string) {
-    const yt = this.getYouTube(accessToken);
+  async listVideos(maxResults = 25, pageToken?: string) {
+    const yt = await this.getYouTube();
     const res = await yt.search.list({
       part: ['snippet'],
       forMine: true,
@@ -33,8 +71,8 @@ export class YouTubeStudioClient {
     };
   }
 
-  async getVideo(accessToken: string, videoId: string) {
-    const yt = this.getYouTube(accessToken);
+  async getVideo(videoId: string) {
+    const yt = await this.getYouTube();
     const res = await yt.videos.list({
       part: ['snippet', 'statistics', 'status', 'contentDetails'],
       id: [videoId],
@@ -45,7 +83,6 @@ export class YouTubeStudioClient {
   }
 
   async uploadVideo(
-    accessToken: string,
     options: {
       title: string;
       description?: string;
@@ -56,7 +93,7 @@ export class YouTubeStudioClient {
       url?: string;
     }
   ) {
-    const yt = this.getYouTube(accessToken);
+    const yt = await this.getYouTube();
 
     // For file upload, we need a readable stream
     if (!options.filePath) {
@@ -88,7 +125,6 @@ export class YouTubeStudioClient {
   }
 
   async updateVideo(
-    accessToken: string,
     videoId: string,
     updates: {
       title?: string;
@@ -98,10 +134,10 @@ export class YouTubeStudioClient {
       privacyStatus?: string;
     }
   ) {
-    const yt = this.getYouTube(accessToken);
+    const yt = await this.getYouTube();
 
     // First get current video data
-    const current = await this.getVideo(accessToken, videoId);
+    const current = await this.getVideo(videoId);
 
     const snippet: any = {
       ...current.snippet,
@@ -131,14 +167,14 @@ export class YouTubeStudioClient {
     return res.data;
   }
 
-  async deleteVideo(accessToken: string, videoId: string) {
-    const yt = this.getYouTube(accessToken);
+  async deleteVideo(videoId: string) {
+    const yt = await this.getYouTube();
     await yt.videos.delete({ id: videoId });
     return { deleted: true, videoId };
   }
 
-  async setThumbnail(accessToken: string, videoId: string, filePath: string) {
-    const yt = this.getYouTube(accessToken);
+  async setThumbnail(videoId: string, filePath: string) {
+    const yt = await this.getYouTube();
     const fs = await import('fs');
     const stream = fs.createReadStream(filePath);
 
@@ -154,8 +190,8 @@ export class YouTubeStudioClient {
 
   // ─── Playlist Management ────────────────────────────────────────────
 
-  async listPlaylists(accessToken: string, maxResults = 25, pageToken?: string) {
-    const yt = this.getYouTube(accessToken);
+  async listPlaylists(maxResults = 25, pageToken?: string) {
+    const yt = await this.getYouTube();
     const res = await yt.playlists.list({
       part: ['snippet', 'contentDetails', 'status'],
       mine: true,
@@ -170,12 +206,11 @@ export class YouTubeStudioClient {
   }
 
   async createPlaylist(
-    accessToken: string,
     title: string,
     description?: string,
     privacyStatus = 'private'
   ) {
-    const yt = this.getYouTube(accessToken);
+    const yt = await this.getYouTube();
     const res = await yt.playlists.insert({
       part: ['snippet', 'status'],
       requestBody: {
@@ -187,11 +222,10 @@ export class YouTubeStudioClient {
   }
 
   async updatePlaylist(
-    accessToken: string,
     playlistId: string,
     updates: { title?: string; description?: string; privacyStatus?: string }
   ) {
-    const yt = this.getYouTube(accessToken);
+    const yt = await this.getYouTube();
 
     // Get current playlist data
     const current = await yt.playlists.list({
@@ -220,14 +254,14 @@ export class YouTubeStudioClient {
     return res.data;
   }
 
-  async deletePlaylist(accessToken: string, playlistId: string) {
-    const yt = this.getYouTube(accessToken);
+  async deletePlaylist(playlistId: string) {
+    const yt = await this.getYouTube();
     await yt.playlists.delete({ id: playlistId });
     return { deleted: true, playlistId };
   }
 
-  async addToPlaylist(accessToken: string, playlistId: string, videoId: string, position?: number) {
-    const yt = this.getYouTube(accessToken);
+  async addToPlaylist(playlistId: string, videoId: string, position?: number) {
+    const yt = await this.getYouTube();
     const res = await yt.playlistItems.insert({
       part: ['snippet'],
       requestBody: {
@@ -241,16 +275,16 @@ export class YouTubeStudioClient {
     return res.data;
   }
 
-  async removeFromPlaylist(accessToken: string, playlistItemId: string) {
-    const yt = this.getYouTube(accessToken);
+  async removeFromPlaylist(playlistItemId: string) {
+    const yt = await this.getYouTube();
     await yt.playlistItems.delete({ id: playlistItemId });
     return { deleted: true, playlistItemId };
   }
 
   // ─── Channel & Analytics ────────────────────────────────────────────
 
-  async getChannel(accessToken: string) {
-    const yt = this.getYouTube(accessToken);
+  async getChannel() {
+    const yt = await this.getYouTube();
     const res = await yt.channels.list({
       part: ['snippet', 'statistics', 'contentDetails', 'brandingSettings'],
       mine: true,
@@ -261,7 +295,6 @@ export class YouTubeStudioClient {
   }
 
   async getAnalytics(
-    accessToken: string,
     options: {
       startDate: string;
       endDate: string;
@@ -270,6 +303,7 @@ export class YouTubeStudioClient {
       videoId?: string;
     }
   ) {
+    const accessToken = await this.getAccessToken();
     const auth = new OAuth2Client();
     auth.setCredentials({ access_token: accessToken });
     const ytAnalytics = google.youtubeAnalytics({ version: 'v2', auth });
@@ -290,8 +324,8 @@ export class YouTubeStudioClient {
 
   // ─── Comments ───────────────────────────────────────────────────────
 
-  async listComments(accessToken: string, videoId: string, maxResults = 20, pageToken?: string) {
-    const yt = this.getYouTube(accessToken);
+  async listComments(videoId: string, maxResults = 20, pageToken?: string) {
+    const yt = await this.getYouTube();
     const res = await yt.commentThreads.list({
       part: ['snippet', 'replies'],
       videoId,
@@ -306,8 +340,8 @@ export class YouTubeStudioClient {
     };
   }
 
-  async replyToComment(accessToken: string, parentId: string, text: string) {
-    const yt = this.getYouTube(accessToken);
+  async replyToComment(parentId: string, text: string) {
+    const yt = await this.getYouTube();
     const res = await yt.comments.insert({
       part: ['snippet'],
       requestBody: {
@@ -320,18 +354,17 @@ export class YouTubeStudioClient {
     return res.data;
   }
 
-  async deleteComment(accessToken: string, commentId: string) {
-    const yt = this.getYouTube(accessToken);
+  async deleteComment(commentId: string) {
+    const yt = await this.getYouTube();
     await yt.comments.delete({ id: commentId });
     return { deleted: true, commentId };
   }
 
   async moderateComment(
-    accessToken: string,
     commentId: string,
     moderationStatus: 'published' | 'heldForReview' | 'rejected'
   ) {
-    const yt = this.getYouTube(accessToken);
+    const yt = await this.getYouTube();
     await yt.comments.setModerationStatus({
       id: [commentId],
       moderationStatus,
@@ -342,7 +375,6 @@ export class YouTubeStudioClient {
   // ─── Search ─────────────────────────────────────────────────────────
 
   async search(
-    accessToken: string,
     query: string,
     options: {
       type?: string;
@@ -352,7 +384,7 @@ export class YouTubeStudioClient {
       order?: string;
     } = {}
   ) {
-    const yt = this.getYouTube(accessToken);
+    const yt = await this.getYouTube();
     const res = await yt.search.list({
       part: ['snippet'],
       q: query,
