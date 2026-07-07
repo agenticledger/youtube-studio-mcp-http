@@ -22,6 +22,18 @@ export class YouTubeStudioClient {
     this.clientSecret = clientSecret;
   }
 
+  /**
+   * Broker-first path: build a client from an already-resolved Google access token
+   * (the Connections Broker resolves + auto-refreshes it for provider `google-youtube`).
+   * No refresh_token or client_secret is held by this MCP.
+   */
+  static fromAccessToken(accessToken: string): YouTubeStudioClient {
+    const c = new YouTubeStudioClient('', '', '');
+    c.cachedAccessToken = accessToken;
+    c.tokenExpiresAt = Number.MAX_SAFE_INTEGER;
+    return c;
+  }
+
   private async getAccessToken(): Promise<string> {
     if (this.cachedAccessToken && Date.now() < this.tokenExpiresAt - 60_000) {
       return this.cachedAccessToken;
