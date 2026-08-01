@@ -7,6 +7,7 @@
 
 import { z } from 'zod';
 import { YouTubeStudioClient } from './api-client.js';
+import { startUploadJob, getUploadJob } from './jobs.js';
 
 interface ToolDef {
   name: string;
@@ -41,7 +42,7 @@ export const tools: ToolDef[] = [
   {
     name: 'youtube_studio_upload_video',
     description:
-      'Upload a video to YouTube. Prefer "url" — a public or pre-signed link the server downloads and streams to YouTube. This is REQUIRED when using the hosted MCP, which cannot see your local disk. "filePath" only works if the MCP runs on the same machine as the file.',
+      'Upload a video to YouTube. Returns a jobId immediately and runs the upload in the BACKGROUND (so large files are not bound by the call timeout); poll youtube_studio_job_get(jobId) until status is "done" (returns videoId) or "failed". Prefer "url" — a public or pre-signed link the server downloads and streams to YouTube (REQUIRED for the hosted MCP, which cannot see your local disk). Set wait:true to upload synchronously and get the videoId directly (small files only).',
     inputSchema: z.object({
       url: z
         .string()
@@ -64,9 +65,14 @@ export const tools: ToolDef[] = [
         .optional()
         .default('private')
         .describe('Privacy status'),
+      wait: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe('If true, block until the upload finishes and return the videoId directly (small files only — may hit the call timeout on large files). Default false = background job + poll.'),
     }),
-    handler: async (client, args) =>
-      client.uploadVideo({
+    handler: async (client, args) => {
+      const uploadOptions = {
         title: args.title,
         description: args.description,
         tags: args.tags,
@@ -74,7 +80,45 @@ export const tools: ToolDef[] = [
         privacyStatus: args.privacyStatus,
         filePath: args.filePath,
         url: args.url,
-      }),
+      };
+      if (args.wait) {
+        return client.uploadVideo(uploadOptions);
+      }
+      const job = startUploadJob(client, uploadOptions);
+      return {
+        jobId: job.jobId,
+        status: job.status,
+        message: `Upload started in the background. Poll youtube_studio_job_get with jobId "${job.jobId}" until status is "done" (returns videoId) or "failed".`,
+      };
+    },
+  },
+
+  {
+    name: 'youtube_studio_job_get',
+    description:
+      'Poll the status of a background video upload started by youtube_studio_upload_video. Returns status uploading|done|failed; when done it includes the new videoId.',
+    inputSchema: z.object({
+      jobId: z.string().describe('The jobId returned by youtube_studio_upload_video'),
+    }),
+    handler: async (_client, args) => {
+      const job = getUploadJob(args.jobId);
+      if (!job) {
+        return {
+          status: 'not_found',
+          error: `No upload job "${args.jobId}". Jobs are kept ~1h after completion and are lost if the server restarts.`,
+        };
+      }
+      return {
+        jobId: job.jobId,
+        status: job.status,
+        title: job.title,
+        source: job.source,
+        videoId: job.videoId,
+        error: job.error,
+        startedAt: job.startedAt,
+        updatedAt: job.updatedAt,
+      };
+    },
   },
 
   {

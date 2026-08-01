@@ -63,7 +63,7 @@ const PORT = parseInt(process.env.PORT || '3100', 10);
 const SERVER_BASE_URL = process.env.SERVER_BASE_URL || `http://localhost:${PORT}`;
 const SLUG = 'youtube-studio';
 const NAME = 'YouTube Studio MCP Server';
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 
 /** Construct a YouTubeStudioClient from a broker-resolved (or raw passthrough) credential. */
 function makeClient(credential: string): YouTubeStudioClient {
