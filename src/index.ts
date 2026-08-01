@@ -47,6 +47,17 @@ function zodToJsonSchema(schema: any): any {
   return _zodToJsonSchema(schema);
 }
 
+// --- Fatal-error guards ---------------------------------------------------
+// Last line of defense: an async error escaping a handler (e.g. an unhandled
+// stream 'error' during a video upload) must NOT tear down the process and drop
+// the MCP transport for every session. Log and keep serving.
+process.on('unhandledRejection', (reason) => {
+  console.error('[fatal-guard] unhandledRejection (kept alive):', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[fatal-guard] uncaughtException (kept alive):', err);
+});
+
 // --- Config ---
 const PORT = parseInt(process.env.PORT || '3100', 10);
 const SERVER_BASE_URL = process.env.SERVER_BASE_URL || `http://localhost:${PORT}`;

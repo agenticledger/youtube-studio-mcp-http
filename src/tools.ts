@@ -40,9 +40,21 @@ export const tools: ToolDef[] = [
 
   {
     name: 'youtube_studio_upload_video',
-    description: 'Upload a video from a local file path to YouTube',
+    description:
+      'Upload a video to YouTube. Prefer "url" — a public or pre-signed link the server downloads and streams to YouTube. This is REQUIRED when using the hosted MCP, which cannot see your local disk. "filePath" only works if the MCP runs on the same machine as the file.',
     inputSchema: z.object({
-      filePath: z.string().describe('Local file path to the video file'),
+      url: z
+        .string()
+        .optional()
+        .describe(
+          'RECOMMENDED. Public or pre-signed URL to the video file. The server downloads it and streams it straight to YouTube — works with the hosted MCP. Upload the file to Drive/catbox/S3 first and pass the direct download URL.'
+        ),
+      filePath: z
+        .string()
+        .optional()
+        .describe(
+          'Local file path to the video file. Only works when the MCP is co-located with the file (NOT the case for the hosted server — use "url" instead).'
+        ),
       title: z.string().describe('Video title'),
       description: z.string().optional().describe('Video description'),
       tags: z.array(z.string()).optional().describe('Video tags'),
@@ -61,6 +73,7 @@ export const tools: ToolDef[] = [
         categoryId: args.categoryId,
         privacyStatus: args.privacyStatus,
         filePath: args.filePath,
+        url: args.url,
       }),
   },
 

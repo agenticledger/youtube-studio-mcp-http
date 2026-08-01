@@ -106,34 +106,72 @@ export class YouTubeStudioClient {
     }
   ) {
     const yt = await this.getYouTube();
+    const { Readable } = await import('stream');
 
-    // For file upload, we need a readable stream
-    if (!options.filePath) {
-      throw new Error('filePath is required for video upload');
+    // Resolve the media body from either a URL (server pulls the bytes — the ONLY
+    // option that works when this MCP is hosted/remote and can't see the caller's
+    // disk) or a local filePath (only usable when the MCP is co-located with the file).
+    let body: NodeJS.ReadableStream;
+    let sourceLabel: string;
+
+    if (options.url) {
+      sourceLabel = `url ${options.url}`;
+      const response = await fetch(options.url);
+      if (!response.ok || !response.body) {
+        throw new Error(
+          `Failed to fetch video from URL (${response.status} ${response.statusText}): ${options.url}`
+        );
+      }
+      // Stream the download straight into the upload — no full-file buffering,
+      // so even large (200 MB+) files don't blow up memory.
+      body = Readable.fromWeb(response.body as any);
+    } else if (options.filePath) {
+      sourceLabel = `filePath ${options.filePath}`;
+      const fs = await import('fs');
+      // Validate up front so an unreadable path is a clean tool error, not a crash.
+      // (Hosted/remote servers cannot see a caller's local path like ~/Desktop/…)
+      if (!fs.existsSync(options.filePath)) {
+        throw new Error(
+          `Video file not readable at "${options.filePath}". This MCP runs hosted/remote and cannot see your local disk — ` +
+            `upload the file to a public or pre-signed URL and pass "url" instead (the server will pull the bytes).`
+        );
+      }
+      body = fs.createReadStream(options.filePath);
+    } else {
+      throw new Error(
+        'Provide either "url" (recommended — the server pulls the bytes) or "filePath" ' +
+          '(only if the MCP is co-located with the file) for video upload.'
+      );
     }
 
-    const fs = await import('fs');
-    const stream = fs.createReadStream(options.filePath);
-
-    const res = await yt.videos.insert({
-      part: ['snippet', 'status'],
-      requestBody: {
-        snippet: {
-          title: options.title,
-          description: options.description || '',
-          tags: options.tags || [],
-          categoryId: options.categoryId || '22', // People & Blogs
-        },
-        status: {
-          privacyStatus: options.privacyStatus || 'private',
-        },
-      },
-      media: {
-        body: stream,
-      },
+    // CRITICAL: attach an 'error' handler so an async stream error (ENOENT, EPIPE,
+    // network drop mid-transfer) rejects this promise cleanly instead of becoming an
+    // uncaught exception that crashes the process and drops the MCP transport for
+    // EVERY session. This is the root cause of the "transport dropped mid-call" bug.
+    return await new Promise<any>((resolve, reject) => {
+      (body as any).on('error', (e: Error) =>
+        reject(new Error(`Video source stream failed (${sourceLabel}): ${e.message}`))
+      );
+      yt.videos
+        .insert({
+          part: ['snippet', 'status'],
+          requestBody: {
+            snippet: {
+              title: options.title,
+              description: options.description || '',
+              tags: options.tags || [],
+              categoryId: options.categoryId || '22', // People & Blogs
+            },
+            status: {
+              privacyStatus: options.privacyStatus || 'private',
+            },
+          },
+          media: {
+            body,
+          },
+        })
+        .then((res) => resolve(res.data), reject);
     });
-
-    return res.data;
   }
 
   async updateVideo(
